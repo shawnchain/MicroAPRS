@@ -37,6 +37,45 @@ static const uint8_t PROGMEM sin_table[] =
     253, 253, 253, 253, 254, 254, 254, 254, 254, 255, 255, 255, 255, 255, 255, 255,
 }; STATIC_ASSERT(sizeof(sin_table) == SIN_LEN / 4);
 
+#if (CONFIG_AFSK_FILTER == AFSK_FIR)
+enum fir_filters
+{
+	FIR_1200_BP=0,
+	FIR_2200_BP=1,
+	FIR_1200_LP=2
+};
+
+static FIR fir_table[] =
+{
+	[FIR_1200_BP] = {
+		.taps = 11,
+		.coef = {
+			-12, -16, -15, 0, 20, 29, 20, 0, -15, -16, -12
+		},
+		.mem = {
+			0,
+		},
+	},
+	[FIR_2200_BP] = {
+		.taps = 11,
+		.coef = {
+			11, 15, -8, -26, 4, 30, 4, -26, -8, 15, 11
+		},
+		.mem = {
+			0,
+		},
+	},
+	[FIR_1200_LP] = {
+		.taps = 8,
+		.coef = {
+			-9, 3, 26, 47, 47, 26, 3, -9
+		},
+		.mem = {
+			0,
+		},
+	},
+};
+#endif
 
 // Calculate any sine value from quarter wave sine table
 // The reason we declare this inline is to eliminate an extra
@@ -63,6 +102,29 @@ INLINE uint8_t sinSample(uint16_t i) {
     // than a half wave.
     return (i >= (SIN_LEN/2)) ? (255 - sine) : sine;
 }
+
+#if (CONFIG_AFSK_FILTER == AFSK_FIR)
+static int8_t fir_filter(int8_t s, enum fir_filters f)
+{
+	int8_t Q = fir_table[f].taps - 1;
+	int8_t *B = fir_table[f].coef;
+	int16_t *Bmem = fir_table[f].mem;
+
+	int8_t i;
+	int16_t y;
+
+	Bmem[0] = s;
+	y = 0;
+
+	for (i = Q; i >= 0; i--)
+	{
+		y += Bmem[i] * B[i];
+		Bmem[i + 1] = Bmem[i];
+	}
+
+	return (int8_t) (y / 128);
+}
+#endif
 
 // A very basic macro that just checks whether the last bit
 // of a whatever is passed into it differ. This is used in the
@@ -289,6 +351,8 @@ static bool hdlcParse(Hdlc *hdlc, bool bit, FIFOBuffer *fifo) {
 // medium). The result of this analysis will then
 // be passed to the HDLC parser in form of a 1 or a 0
 void afsk_adc_isr(Afsk *afsk, int8_t currentSample) {
+
+#if (CONFIG_AFSK_FILTER != AFSK_FIR)
     // To determine the received frequency, and thereby
     // the bit of the sample, we multiply the sample by
     // a sample delayed by (samples per bit / 2).
@@ -296,11 +360,17 @@ void afsk_adc_isr(Afsk *afsk, int8_t currentSample) {
     // Chebyshev filter. The lowpass filtering serves
     // to "smooth out" the variations in the samples.
 
+	/*
+	 * Frequency discrimination is achieved by simply multiplying
+	 * the sample with a delayed sample of (samples per bit) / 2.
+	 * Then the signal is lowpass filtered with a first order,
+	 * 600 Hz filter. The filter implementation is selectable
+	 * through the CONFIG_AFSK_FILTER config variable.
+	 */
     afsk->iirX[0] = afsk->iirX[1];
     afsk->iirX[1] = ((int8_t)fifo_pop(&afsk->delayFifo) * currentSample) >> 2;
 
     afsk->iirY[0] = afsk->iirY[1];
-    
     afsk->iirY[1] = afsk->iirX[0] + afsk->iirX[1] + (afsk->iirY[0] >> 1); // Chebyshev filter
 
 
@@ -310,8 +380,52 @@ void afsk_adc_isr(Afsk *afsk, int8_t currentSample) {
     // And then add the sampled bit to our delay line
     afsk->sampledBits |= (afsk->iirY[1] > 0) ? 1 : 0;
 
+	/*
+	if (ABS(afsk->iirY[1]) - 20 > 0) {
+		afsk->cd_state++;
+		if (afsk->cd_state > 30) {
+			afsk->cd_state = 30;
+			afsk->cd = true;
+		}
+	} else {
+		if (afsk->cd_state > 0) {
+			afsk->cd_state --;
+			if (afsk->cd_state == 0) {
+				afsk->cd = false;
+			}
+		}
+	}
+	*/
+
     // Put the current raw sample in the delay FIFO
     fifo_push(&afsk->delayFifo, currentSample);
+
+#elif (CONFIG_AFSK_FILTER == AFSK_FIR)
+#define DCD_LEVEL 5
+	afsk->iirY[0] = ABS(fir_filter(currentSample, FIR_1200_BP));
+	afsk->iirY[1] = ABS(fir_filter(currentSample, FIR_2200_BP));
+
+	afsk->sampledBits <<= 1;
+	afsk->sampledBits |= fir_filter(afsk->iirY[1] - afsk->iirY[0], FIR_1200_LP) > 0;
+
+	/*
+	if (afsk->iirY[1] > DCD_LEVEL || afsk->iirY[0] > DCD_LEVEL) {
+		afsk->cd_state++;
+		if (afsk->cd_state > 30) {
+			afsk->cd_state = 30;
+			afsk->cd = true;
+		}
+	} else {
+		if (afsk->cd_state > 0) {
+			afsk->cd_state --;
+
+			if (afsk->cd_state == 0) {
+				afsk->cd = false;
+			}
+		}
+	}
+	*/
+#endif
 
     // We need to check whether there is a signal transition.
     // If there is, we can recalibrate the phase of our 
