@@ -1,38 +1,42 @@
 #define ENABLE_HELP false
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <avr/eeprom.h>
 #define F_CPU 16000000UL
 #include <util/delay.h>
 #include "protocol/SimpleSerial.h"
+#include "buildrev.h"
+#include "config.h"
 
-bool PRINT_SRC = true;
-bool PRINT_DST = true;
-bool PRINT_PATH = true;
-bool PRINT_DATA = true;
-bool PRINT_INFO = true;
-bool VERBOSE = true;
-bool SILENT = false;
-bool SS_INIT = false;
-bool SS_DEFAULT_CONF = false;
+static bool PRINT_SRC = true;
+static bool PRINT_DST = true;
+static bool PRINT_PATH = true;
+static bool PRINT_DATA = true;
+static bool PRINT_INFO = true;
+static bool VERBOSE = true;
+static bool SILENT = false;
+static bool SS_INIT = false;
+static bool SS_DEFAULT_CONF = false;
 
-AX25Call src;
-AX25Call dst;
-AX25Call path1;
-AX25Call path2;
+static AX25Call src;
+static AX25Call dst;
+static AX25Call path1;
+static AX25Call path2;
 
-char CALL[6] = DEFAULT_CALLSIGN;
-int CALL_SSID = 0;
-char DST[6] = DEFAULT_DESTINATION_CALL;
-int DST_SSID = 0;
-char PATH1[6] = "WIDE1";
-int PATH1_SSID = 1;
-char PATH2[6] = "WIDE2";
-int PATH2_SSID = 2;
+static char CALL[7] = DEFAULT_CALLSIGN;
+static int CALL_SSID = 0;
+static char DST[7] = DEFAULT_DESTINATION_CALL;
+static int DST_SSID = 0;
+static char PATH1[7] = "WIDE1";
+static int PATH1_SSID = 1;
+static char PATH2[7] = "WIDE2";
+static int PATH2_SSID = 2;
 
-AX25Call path[4];
-AX25Ctx *ax25ctx;
+static AX25Call path[4];
+static AX25Ctx *ax25ctx;
+static Serial *g_ser;
 
 #define NV_MAGIC_BYTE 0x69
 uint8_t EEMEM nvMagicByte;
@@ -60,31 +64,81 @@ uint8_t EEMEM nvSYMBOL;
 uint8_t EEMEM nvAUTOACK;
 
 // Location packet assembly fields
-char latitude[8];
-char longtitude[9];
-char symbolTable = '/';
-char symbol = 'n';
+static char latitude[8] = "";
+static char longtitude[9] = "";
+static char symbolTable = '/';
+static char symbol = 'n';
 
-uint8_t power = 10;
-uint8_t height = 10;
-uint8_t gain = 10;
-uint8_t directivity = 10;
+static uint8_t power = 10;
+static uint8_t height = 10;
+static uint8_t gain = 10;
+static uint8_t directivity = 10;
 /////////////////////////
 
 // Message packet assembly fields
-char message_recip[6];
-int message_recip_ssid = -1;
+static char message_recip[6] = "";
+static int message_recip_ssid = -1;
 
-int message_seq = 0;
-char lastMessage[67];
-size_t lastMessageLen;
-bool message_autoAck = false;
+static int message_seq = 0;
+static char lastMessage[67] = "";
+static size_t lastMessageLen;
+static bool message_autoAck = false;
 /////////////////////////
 
-void ss_init(AX25Ctx *ax25) {
+static void enable_print_flag(bool* var, bool enabled, const char* name){
+	*var = enabled;
+#if 1
+	kfile_print(&g_ser->fd,"OK");
+#else
+	if(!SILENT && VERBOSE){
+		if(enabled){
+			kprintf("Print %s enabled\r\n", name); 
+		}else{
+			kprintf("Print %s disabled\r\n", name); 
+		}
+	}
+	if(!SILENT && !VERBOSE){
+		kprintf("1\n");
+	}
+#endif
+}
+
+#if 1
+
+#define respond_ok(str) kfile_print(&g_ser->fd,"OK\n");
+#define respond_ok_with_ssid(msg,call,ssid) kfile_print(&g_ser->fd,"OK\n");
+#define respond_error(str) kfile_print(&g_ser->fd,"ERROR\n");
+
+#else
+
+static inline void respond_ok(const char* str){
+	if (!SILENT && VERBOSE){
+		kprintf("%s\n", str);
+	}
+	if(!SILENT && !VERBOSE){
+		kprintf("1\n");
+	}
+}
+static inline void respond_ok_with_ssid(const char* msg, const char* call, uint8_t ssid){
+	if(!SILENT && VERBOSE){
+		kprintf("%s: %.6s-%d\n",msg, call, ssid); 
+	}
+	if(!SILENT && !VERBOSE){
+		kprintf("1\n");
+	}
+}
+
+#endif
+
+void ss_init(AX25Ctx *ax25, Serial *ser) {
     ax25ctx = ax25;
+	g_ser = ser;
     ss_loadSettings();
     SS_INIT = true;
+	
+	_delay_ms(300);
+	kfile_printf(&ser->fd, "MicroAPRS 1.0-r%d/f%d/BG5HHP - ready\r\n",VERS_BUILD,CONFIG_AFSK_FILTER);
+	/*
     if (VERBOSE) {
         _delay_ms(300);
         kprintf("---------------\n");
@@ -94,12 +148,12 @@ void ss_init(AX25Ctx *ax25) {
         kprintf("Modem ready\n");
         kprintf("---------------\n");
     }
+	*/
 }
 
 void ss_clearSettings(void) {
     eeprom_update_byte((void*)&nvMagicByte, 0xFF);
-    if (VERBOSE) kprintf("Configuration cleared. Restart to load defaults.\n");
-    if (!VERBOSE && !SILENT) kprintf("1\n");
+	respond_ok("Configuration cleared. Restart to load defaults");
 }
 
 void ss_loadSettings(void) {
@@ -131,10 +185,13 @@ void ss_loadSettings(void) {
         symbol = eeprom_read_byte((void*)&nvSYMBOL);
         message_autoAck = eeprom_read_byte((void*)&nvAUTOACK);
 
-        if (VERBOSE && SS_INIT) kprintf("Configuration loaded\n");
+		if(SS_INIT){
+			respond_ok("Config loaded");
+		}
     } else {
-        if (SS_INIT && !SILENT && VERBOSE) kprintf("Error: No stored configuration to load!\n");
-        if (SS_INIT && !SILENT && !VERBOSE) kprintf("0\n");
+		if(SS_INIT){
+			respond_error("No stored config to load!");
+		}
         SS_DEFAULT_CONF = true;
     }
 }
@@ -167,9 +224,7 @@ void ss_saveSettings(void) {
     eeprom_update_byte((void*)&nvAUTOACK, message_autoAck);
 
     eeprom_update_byte((void*)&nvMagicByte, NV_MAGIC_BYTE);
-
-    if (VERBOSE) kprintf("Configuration saved\n");
-    if (!VERBOSE && !SILENT) kprintf("1\n");
+	respond_ok("Config saved\n");
 }
 
 void ss_messageCallback(struct AX25Msg *msg, Serial *ser) {
@@ -290,18 +345,15 @@ void ss_serialCallback(void *_buffer, size_t length, Serial *ser, AX25Ctx *ctx) 
         if (buffer[0] == '!' && length > 1) {
             buffer++; length--;
             ss_sendPkt(buffer, length, ctx);
-            if (VERBOSE) kprintf("Packet sent\n");
-            if (!VERBOSE && !SILENT) kprintf("1\n");
+			respond_ok("Packet sent");
         } else if (buffer[0] == '@') {
             buffer++; length--;
             ss_sendLoc(buffer, length, ctx);
-            if (VERBOSE) kprintf("Location update sent\n");
-            if (!VERBOSE && !SILENT) kprintf("1\n");
+			respond_ok("Location update sent");
         } else if (buffer[0] == '#') {
             buffer++; length--;
             ss_sendMsg(buffer, length, ctx);
-            if (VERBOSE) kprintf("Message sent\n");
-            if (!VERBOSE && !SILENT) kprintf("1\n");
+			respond_ok("Message sent");
         }
         #if ENABLE_HELP
         else if (buffer[0] == 'h') {
@@ -332,8 +384,7 @@ void ss_serialCallback(void *_buffer, size_t length, Serial *ser, AX25Ctx *ctx) 
                 CALL[count] = 0x00;
                 count++;
             }
-            if (VERBOSE) kprintf("Callsign: %.6s-%d\n", CALL, CALL_SSID);
-            if (!VERBOSE && !SILENT) kprintf("1\n");
+			respond_ok_with_ssid("Callsign", CALL, CALL_SSID);
 
         } else if (buffer[0] == 'd' && length > 3) {
             buffer++; length--;
@@ -351,8 +402,7 @@ void ss_serialCallback(void *_buffer, size_t length, Serial *ser, AX25Ctx *ctx) 
                 DST[count] = 0x00;
                 count++;
             }
-            if (VERBOSE) kprintf("Destination: %.6s-%d\n", DST, DST_SSID);
-            if (!VERBOSE && !SILENT) kprintf("1\n");
+			respond_ok_with_ssid("Destination", CALL, CALL_SSID);
 
 
         } else if (buffer[0] == '1' && length > 1) {
@@ -371,8 +421,7 @@ void ss_serialCallback(void *_buffer, size_t length, Serial *ser, AX25Ctx *ctx) 
                 PATH1[count] = 0x00;
                 count++;
             }
-            if (VERBOSE) kprintf("Path1: %.6s-%d\n", PATH1, PATH1_SSID);
-            if (!VERBOSE && !SILENT) kprintf("1\n");
+			respond_ok_with_ssid("Path1", PATH1, PATH1_SSID);
 
 
         } else if (buffer[0] == '2' && length > 1) {
@@ -391,8 +440,7 @@ void ss_serialCallback(void *_buffer, size_t length, Serial *ser, AX25Ctx *ctx) 
                 PATH2[count] = 0x00;
                 count++;
             }
-            if (VERBOSE) kprintf("Path2: %.6s-%d\n", PATH2, PATH2_SSID);
-            if (!VERBOSE && !SILENT) kprintf("1\n");
+			respond_ok_with_ssid("Path2",PATH2,PATH2_SSID);
 
 
         } else if (buffer[0] == 's' && length > 2) {
@@ -403,8 +451,7 @@ void ss_serialCallback(void *_buffer, size_t length, Serial *ser, AX25Ctx *ctx) 
                 } else {
                     CALL_SSID = buffer[1]-48;
                 }
-                if (VERBOSE) kprintf("Callsign: %.6s-%d\n", CALL, CALL_SSID);
-                if (!VERBOSE && !SILENT) kprintf("1\n");
+				respond_ok_with_ssid("Callsign", CALL, CALL_SSID);
             }
             if (buffer[0] == 'd') {
                 if (length > 2 && buffer[2] > 48 && buffer[2] < 58) {
@@ -412,8 +459,7 @@ void ss_serialCallback(void *_buffer, size_t length, Serial *ser, AX25Ctx *ctx) 
                 } else {
                     DST_SSID = buffer[1]-48;
                 }
-                if (VERBOSE) kprintf("Destination: %.6s-%d\n", DST, DST_SSID);
-                if (!VERBOSE && !SILENT) kprintf("1\n");
+                respond_ok_with_ssid("Destination", DST, DST_SSID);
             }
             if (buffer[0] == '1' && buffer[2] > 48 && buffer[2] < 58) {
                 if (length > 2) {
@@ -421,8 +467,7 @@ void ss_serialCallback(void *_buffer, size_t length, Serial *ser, AX25Ctx *ctx) 
                 } else {
                     PATH1_SSID = buffer[1]-48;
                 }
-                if (VERBOSE) kprintf("Path1: %.6s-%d\n", PATH1, PATH1_SSID);
-                if (!VERBOSE && !SILENT) kprintf("1\n");
+                respond_ok_with_ssid("Path1", PATH1, PATH1_SSID);
             }
             if (buffer[0] == '2' && buffer[2] > 48 && buffer[2] < 58) {
                 if (length > 2) {
@@ -430,66 +475,25 @@ void ss_serialCallback(void *_buffer, size_t length, Serial *ser, AX25Ctx *ctx) 
                 } else {
                     PATH2_SSID = buffer[1]-48;
                 }
-                if (VERBOSE) kprintf("Path2: %.6s-%d\n", PATH2, PATH2_SSID);
-                if (!VERBOSE && !SILENT) kprintf("1\n");
+                respond_ok_with_ssid("Path2", PATH2, PATH2_SSID);
             }
             
         } else if (buffer[0] == 'p' && length > 2) {
             buffer++; length--;
             if (buffer[0] == 's') {
-                if (buffer[1] == 49) {
-                    PRINT_SRC = true;
-                    if (VERBOSE) kprintf("Print SRC enabled\n");
-                    if (!VERBOSE && !SILENT) kprintf("1\n");
-                } else {
-                    PRINT_SRC = false;
-                    if (VERBOSE) kprintf("Print SRC disabled\n");
-                    if (!VERBOSE && !SILENT) kprintf("1\n");
-                }
+				enable_print_flag(&PRINT_SRC,(buffer[1] == 49) , "SRC");
             }
             if (buffer[0] == 'd') {
-                if (buffer[1] == 49) {
-                    PRINT_DST = true;
-                    if (VERBOSE) kprintf("Print DST enabled\n");
-                    if (!VERBOSE && !SILENT) kprintf("1\n");
-                } else {
-                    PRINT_DST = false;
-                    if (VERBOSE) kprintf("Print DST disabled\n");
-                    if (!VERBOSE && !SILENT) kprintf("1\n");
-                }
+				enable_print_flag(&PRINT_DST, (buffer[1] == 49), "DST");
             }
             if (buffer[0] == 'p') {
-                if (buffer[1] == 49) {
-                    PRINT_PATH = true;
-                    if (VERBOSE) kprintf("Print PATH enabled\n");
-                    if (!VERBOSE && !SILENT) kprintf("1\n");
-                } else {
-                    PRINT_PATH = false;
-                    if (VERBOSE) kprintf("Print PATH disabled\n");
-                    if (!VERBOSE && !SILENT) kprintf("1\n");
-                }
+				enable_print_flag(&PRINT_PATH, (buffer[1] == 49), "PATH");
             }
             if (buffer[0] == 'm') {
-                if (buffer[1] == 49) {
-                    PRINT_DATA = true;
-                    if (VERBOSE) kprintf("Print DATA enabled\n");
-                    if (!VERBOSE && !SILENT) kprintf("1\n");
-                } else {
-                    PRINT_DATA = false;
-                    if (VERBOSE) kprintf("Print DATA disabled\n");
-                    if (!VERBOSE && !SILENT) kprintf("1\n");
-                }
+				enable_print_flag(&PRINT_DATA, (buffer[1] == 49), "DATA");
             }
             if (buffer[0] == 'i') {
-                if (buffer[1] == 49) {
-                    PRINT_INFO = true;
-                    if (VERBOSE) kprintf("Print INFO enabled\n");
-                    if (!VERBOSE && !SILENT) kprintf("1\n");
-                } else {
-                    PRINT_INFO = false;
-                    if (VERBOSE) kprintf("Print INFO disabled\n");
-                    if (!VERBOSE && !SILENT) kprintf("1\n");
-                }
+				enable_print_flag(&PRINT_INFO, (buffer[1] == 49), "INFO");
             }
         } else if (buffer[0] == 'v') {
             if (buffer[1] == 49) {
@@ -513,43 +517,43 @@ void ss_serialCallback(void *_buffer, size_t length, Serial *ser, AX25Ctx *ctx) 
             if (buffer[0] == 'l' && buffer[1] == 'a' && length >= 10) {
                 buffer += 2;
                 memcpy(latitude, (void *)buffer, 8);
-                if (VERBOSE) kprintf("Latitude set to %.8s\n", latitude);
-                if (!VERBOSE && !SILENT) kprintf("1\n");
+                if (!SILENT && VERBOSE) kprintf("Latitude set to %.8s\n", latitude);
+                if (!SILENT && !VERBOSE ) kprintf("1\n");
             } else if (buffer[0] == 'l' && buffer[1] == 'o' && length >= 11) {
                 buffer += 2;
                 memcpy(longtitude, (void *)buffer, 9);
-                if (VERBOSE) kprintf("Longtitude set to %.9s\n", longtitude);
-                if (!VERBOSE && !SILENT) kprintf("1\n");
+                if (!SILENT && VERBOSE) kprintf("Longtitude set to %.9s\n", longtitude);
+                if (!SILENT && !VERBOSE) kprintf("1\n");
             } else if (buffer[0] == 'p' && length >= 2 && buffer[1] >= 48 && buffer[1] <= 57) {
                 power = buffer[1] - 48;
-                if (VERBOSE) kprintf("Power set to %dw\n", power*power);
-                if (!VERBOSE && !SILENT) kprintf("1\n");
+                if (!SILENT && VERBOSE) kprintf("Power set to %dw\n", power*power);
+                if (!SILENT && !VERBOSE) kprintf("1\n");
             } else if (buffer[0] == 'h' && length >= 2 && buffer[1] >= 48 && buffer[1] <= 57) {
                 height = buffer[1] - 48;
-                if (VERBOSE) kprintf("Antenna height set to %ldm AAT\n", (long)(BV(height)*1000L)/328L);
-                if (!VERBOSE && !SILENT) kprintf("1\n");
+                if (!SILENT && VERBOSE) kprintf("Antenna height set to %ldm AAT\n", (long)(BV(height)*1000L)/328L);
+                if (!SILENT && !VERBOSE) kprintf("1\n");
             } else if (buffer[0] == 'g' && length >= 2 && buffer[1] >= 48 && buffer[1] <= 57) {
                 gain = buffer[1] - 48;
-                if (VERBOSE) kprintf("Gain set to %ddB\n", gain);
-                if (!VERBOSE && !SILENT) kprintf("1\n");
+                if (!SILENT && VERBOSE) kprintf("Gain set to %ddB\n", gain);
+                if (!SILENT && !VERBOSE) kprintf("1\n");
             } else if (buffer[0] == 'd' && length >= 2 && buffer[1] >= 48 && buffer[1] <= 57) {
                 directivity = buffer[1] - 48;
                 if (directivity == 9) directivity = 8;
-                if (!VERBOSE && !SILENT) kprintf("1\n");
-                if (VERBOSE) {
-                    if (directivity == 0) kprintf("Directivity set to omni\n");
-                    if (directivity != 0) kprintf("Directivity set to %ddeg\n", directivity*45);
+                if (!SILENT && !VERBOSE) kprintf("1\n");
+                if (!SILENT && VERBOSE) {
+                    if (directivity == 0) kprintf("Dir set to omni\n");
+                    if (directivity != 0) kprintf("Dir set to %ddeg\n", directivity*45);
                 }
             } else if (buffer[0] == 's' && length >= 2) {
                 symbol = buffer[1];
-                if (VERBOSE) kprintf("Symbol set to %c\n", symbol);
+                if (!SILENT && VERBOSE) kprintf("Symbol set to %c\n", symbol);
             } else if (buffer[0] == 't' && length >= 2) {
                 if (buffer[1] == 'a') {
                     symbolTable = '\\';
-                    if (VERBOSE) kprintf("Selected alternate symbol table\n");
+                    if (!SILENT && VERBOSE) kprintf("Selected alt symbol table\n");
                 } else {
                     symbolTable = '/';
-                    if (VERBOSE) kprintf("Selected standard symbol table\n");
+                    if (!SILENT && VERBOSE) kprintf("Selected std symbol table\n");
                 }
                 if (!VERBOSE && !SILENT) kprintf("1\n");
             }
@@ -573,8 +577,8 @@ void ss_serialCallback(void *_buffer, size_t length, Serial *ser, AX25Ctx *ctx) 
                     message_recip[count] = 0x00;
                     count++;
                 }
-                if (VERBOSE) {
-                    kprintf("Message recipient: %.6s", message_recip);
+                if (!SILENT && VERBOSE) {
+                    kprintf("Msg rcpt: %.6s", message_recip);
                     if (message_recip_ssid != -1) { 
                         kprintf("-%d\n", message_recip_ssid);
                     } else {
@@ -589,8 +593,8 @@ void ss_serialCallback(void *_buffer, size_t length, Serial *ser, AX25Ctx *ctx) 
                     message_recip_ssid = buffer[1]-48;
                 }
                 if (message_recip_ssid < 0 || message_recip_ssid > 15) message_recip_ssid = -1;
-                if (VERBOSE) {
-                    kprintf("Message recipient: %.6s", message_recip);
+                if (!SILENT && VERBOSE) {
+                    kprintf("Msg rcpt: %.6s", message_recip);
                     if (message_recip_ssid != -1) { 
                         kprintf("-%d\n", message_recip_ssid);
                     } else {
@@ -600,23 +604,22 @@ void ss_serialCallback(void *_buffer, size_t length, Serial *ser, AX25Ctx *ctx) 
                 if (!VERBOSE && !SILENT) kprintf("1\n");
             } else if (buffer[0] == 'r') {
                 ss_msgRetry(ctx);
-                if (VERBOSE) kprintf("Retried last message\n");
+                if (!SILENT && VERBOSE) kprintf("Retried last msg\n");
                 if (!VERBOSE && !SILENT) kprintf("1\n");
             } else if (buffer[0] == 'a') {
                 if (buffer[1] == 49) {
                     message_autoAck = true;
-                    if (VERBOSE) kprintf("Message auto-ack enabled\n");
+                    if (!SILENT && VERBOSE) kprintf("Msg auto-ack enabled\n");
                     if (!VERBOSE && !SILENT) kprintf("1\n");
                 } else {
                     message_autoAck = false;
-                    if (VERBOSE) kprintf("Message auto-ack disabled\n");
+                    if (!SILENT && VERBOSE) kprintf("Msg auto-ack disabled\n");
                     if (!VERBOSE && !SILENT) kprintf("1\n");
                 }
             }
 
         } else {
-            if (VERBOSE) kprintf("Error: Invalid command\n");
-            if (!VERBOSE && !SILENT) kprintf("0\n");
+			respond_error("Invalid command\n");
         }
 
     }
@@ -743,70 +746,81 @@ void ss_msgRetry(AX25Ctx *ax25) {
     ss_sendMsg(lastMessage, lastMessageLen, ax25);
 }
 
+#if 1
+#define out(fmt,arg...)  kfile_printf(&g_ser->fd, fmt, ##arg)
+#else
+#define out(str)
+#endif
+
 void ss_printSettings(void) {
-    kprintf("Configuration:\n");
-    kprintf("Callsign: %.6s-%d\n", CALL, CALL_SSID);
-    kprintf("Destination: %.6s-%d\n", DST, DST_SSID);
-    kprintf("Path1: %.6s-%d\n", PATH1, PATH1_SSID);
-    kprintf("Path2: %.6s-%d\n", PATH2, PATH2_SSID);
+/*
+    out("Configuration:\n");
+    out("Callsign: %.6s-%d\n", CALL, CALL_SSID);
+    out("Destination: %.6s-%d\n", DST, DST_SSID);
+    out("Path1: %.6s-%d\n", PATH1, PATH1_SSID);
+    out("Path2: %.6s-%d\n", PATH2, PATH2_SSID);
     if (message_autoAck) {
-        kprintf("Auto-ack messages: On\n");
+        out("Auto-ack messages: On\n");
     } else {
-        kprintf("Auto-ack messages: Off\n");
+        out("Auto-ack messages: Off\n");
     }
-    if (power != 10) kprintf("Power: %d\n", power);
-    if (height != 10) kprintf("Height: %d\n", height);
-    if (gain != 10) kprintf("Gain: %d\n", gain);
-    if (directivity != 10) kprintf("Directivity: %d\n", directivity);
-    if (symbolTable == '\\') kprintf("Symbol table: alternate\n");
-    if (symbolTable == '/') kprintf("Symbol table: standard\n");
-    kprintf("Symbol: %c\n", symbol);
+    if (power != 10) {out("Power: %d\n", power);}
+    if (height != 10) {out("Height: %d\n", height);}
+    if (gain != 10) {out("Gain: %d\n", gain);}
+    if (directivity != 10) {out("Directivity: %d\n", directivity);}
+    if (symbolTable == '\\') {out("Symbol table: alternate\n");}
+    if (symbolTable == '/') {out("Symbol table: standard\n");}
+    out("Symbol: %c\n", symbol);
+*/
 }
+
+
 
 #if ENABLE_HELP
     void ss_printHelp(void) {
-            kprintf("----------------------------------\n");
-            kprintf("Serial commands:\n");
-            kprintf("!<data>   Send raw packet\n");
-            kprintf("@<cmt>    Send location update (cmt = optional comment)\n");
-            kprintf("#<msg>    Send APRS message\n\n");
+            out("----------------------------------\n");
+            out("Serial commands:\n");
+            out("!<data>   Send raw packet\n");
+            out("@<cmt>    Send location update (cmt = optional comment)\n");
+            out("#<msg>    Send APRS message\n\n");
 
-            kprintf("c<call>   Set your callsign\n");
-            kprintf("d<call>   Set destination callsign\n");
-            kprintf("1<call>   Set PATH1 callsign\n");
-            kprintf("2<call>   Set PATH2 callsign\n\n");
+            out("c<call>   Set your callsign\n");
+            out("d<call>   Set destination callsign\n");
+            out("1<call>   Set PATH1 callsign\n");
+            out("2<call>   Set PATH2 callsign\n\n");
 
-            kprintf("sc<ssid>  Set your SSID\n");
-            kprintf("sd<ssid>  Set destination SSID\n");
-            kprintf("s1<ssid>  Set PATH1 SSID\n");
-            kprintf("s2<ssid>  Set PATH2 SSID\n\n");
+            out("sc<ssid>  Set your SSID\n");
+            out("sd<ssid>  Set destination SSID\n");
+            out("s1<ssid>  Set PATH1 SSID\n");
+            out("s2<ssid>  Set PATH2 SSID\n\n");
 
-            kprintf("lla<LAT>  Set latitude (NMEA-format, eg 4903.50N)\n");
-            kprintf("llo<LON>  Set latitude (NMEA-format, eg 07201.75W)\n");
-            kprintf("lp<0-9>   Set TX power info\n");
-            kprintf("lh<0-9>   Set antenna height info\n");
-            kprintf("lg<0-9>   Set antenna gain info\n");
-            kprintf("ld<0-9>   Set antenna directivity info\n");
-            kprintf("ls<sym>   Select symbol\n");
-            kprintf("lt<s/a>   Select symbol table (standard/alternate)\n\n");
+            out("lla<LAT>  Set latitude (NMEA-format, eg 4903.50N)\n");
+            out("llo<LON>  Set latitude (NMEA-format, eg 07201.75W)\n");
+            out("lp<0-9>   Set TX power info\n");
+            out("lh<0-9>   Set antenna height info\n");
+            out("lg<0-9>   Set antenna gain info\n");
+            out("ld<0-9>   Set antenna directivity info\n");
+            out("ls<sym>   Select symbol\n");
+            out("lt<s/a>   Select symbol table (standard/alternate)\n\n");
 
-            kprintf("mc<call>  Set message recipient callsign\n");
-            kprintf("ms<ssid>  Set message recipient SSID\n");
-            kprintf("mr<ssid>  Retry last message\n");
-            kprintf("ma<1/0>   Automatic message ACK on/off\n\n");
+            out("mc<call>  Set message recipient callsign\n");
+            out("ms<ssid>  Set message recipient SSID\n");
+            out("mr<ssid>  Retry last message\n");
+            out("ma<1/0>   Automatic message ACK on/off\n\n");
 
-            kprintf("ps<1/0>   Print SRC on/off\n");
-            kprintf("pd<1/0>   Print DST on/off\n");
-            kprintf("pp<1/0>   Print PATH on/off\n");
-            kprintf("pm<1/0>   Print DATA on/off\n");
-            kprintf("pi<1/0>   Print INFO on/off\n\n");
-            kprintf("v<1/0>    Verbose mode on/off\n");
-            kprintf("V<1/0>    Silent mode on/off\n\n");
+            out("ps<1/0>   Print SRC on/off\n");
+            out("pd<1/0>   Print DST on/off\n");
+            out("pp<1/0>   Print PATH on/off\n");
+            out("pm<1/0>   Print DATA on/off\n");
+            out("pi<1/0>   Print INFO on/off\n\n");
+			
+            out("v<1/0>    Verbose mode on/off\n");
+            out("V<1/0>    Silent mode on/off\n\n");
 
-            kprintf("S         Save configuration\n");
-            kprintf("L         Load configuration\n");
-            kprintf("C         Clear configuration\n");
-            kprintf("H         Print configuration\n");
-            kprintf("----------------------------------\n");
+            out("S         Save configuration\n");
+            out("L         Load configuration\n");
+            out("C         Clear configuration\n");
+            out("H         Print configuration\n");
+            out("----------------------------------\n");
     }
 #endif

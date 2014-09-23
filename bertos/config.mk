@@ -53,7 +53,7 @@ COFFCONVERT=$(OBJCOPY) \
 INCDIR  = -I. -Ibertos -Ibertos/net/lwip/src/include -Ibertos/net/lwip/src/include/ipv4
 LIBDIR  = lib
 OBJDIR  = obj
-OUTDIR  = images
+OUTDIR  = target
 
 # output format can be srec, ihex (avrobj is always created)
 FORMAT = srec

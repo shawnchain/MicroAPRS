@@ -22,4 +22,14 @@
 #define CONFIG_AFSK_PREAMBLE_LEN 350UL      // The length of the packet preamble in milliseconds
 #define CONFIG_AFSK_TRAILER_LEN 50UL        // The length of the packet tail in milliseconds
 
+/**
+ * \name Afsk filter types.
+ * $WIZ$ afsk_filter_list = "AFSK_BUTTERWORTH", "AFSK_CHEBYSHEV", "AFSK_FIR"
+ * \{
+ */
+#define AFSK_BUTTERWORTH  0
+#define AFSK_CHEBYSHEV    1
+#define AFSK_FIR          2
+/* \} */
+#define CONFIG_AFSK_FILTER 1
 #endif

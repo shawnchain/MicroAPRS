@@ -38,6 +38,15 @@ static const uint8_t PROGMEM sin_table[] =
 }; STATIC_ASSERT(sizeof(sin_table) == SIN_LEN / 4);
 
 #if (CONFIG_AFSK_FILTER == AFSK_FIR)
+
+#define FIR_MAX_TAPS 16
+typedef struct FIR
+{
+	int8_t taps;
+	int8_t coef[FIR_MAX_TAPS];
+	int16_t mem[FIR_MAX_TAPS];
+} FIR;
+
 enum fir_filters
 {
 	FIR_1200_BP=0,
@@ -53,7 +62,7 @@ static FIR fir_table[] =
 			-12, -16, -15, 0, 20, 29, 20, 0, -15, -16, -12
 		},
 		.mem = {
-			0,
+			0,0,0,0,0,0,0,0,0,0,0,
 		},
 	},
 	[FIR_2200_BP] = {
@@ -62,7 +71,7 @@ static FIR fir_table[] =
 			11, 15, -8, -26, 4, 30, 4, -26, -8, 15, 11
 		},
 		.mem = {
-			0,
+			0,0,0,0,0,0,0,0,0,0,0,
 		},
 	},
 	[FIR_1200_LP] = {
@@ -71,10 +80,30 @@ static FIR fir_table[] =
 			-9, 3, 26, 47, 47, 26, 3, -9
 		},
 		.mem = {
-			0,
+			0,0,0,0,0,0,0,0,
 		},
 	},
 };
+
+static int8_t fir_filter(int8_t s, enum fir_filters f)
+{
+	int8_t N = fir_table[f].taps - 1;
+	int8_t *B = fir_table[f].coef;
+	int16_t *Bmem = fir_table[f].mem;
+
+	int8_t i;
+	int16_t y;
+
+	Bmem[0] = s;
+	y = 0;
+	
+	for(int i = 4;i >=0;i--){
+		y += Bmem[i] * B[i];
+		Bmem[i+1] = Bmen[i]
+	}
+	return (int8_t) (y / 128);
+}
+
 #endif
 
 // Calculate any sine value from quarter wave sine table
@@ -102,29 +131,6 @@ INLINE uint8_t sinSample(uint16_t i) {
     // than a half wave.
     return (i >= (SIN_LEN/2)) ? (255 - sine) : sine;
 }
-
-#if (CONFIG_AFSK_FILTER == AFSK_FIR)
-static int8_t fir_filter(int8_t s, enum fir_filters f)
-{
-	int8_t Q = fir_table[f].taps - 1;
-	int8_t *B = fir_table[f].coef;
-	int16_t *Bmem = fir_table[f].mem;
-
-	int8_t i;
-	int16_t y;
-
-	Bmem[0] = s;
-	y = 0;
-
-	for (i = Q; i >= 0; i--)
-	{
-		y += Bmem[i] * B[i];
-		Bmem[i + 1] = Bmem[i];
-	}
-
-	return (int8_t) (y / 128);
-}
-#endif
 
 // A very basic macro that just checks whether the last bit
 // of a whatever is passed into it differ. This is used in the
@@ -371,8 +377,11 @@ void afsk_adc_isr(Afsk *afsk, int8_t currentSample) {
     afsk->iirX[1] = ((int8_t)fifo_pop(&afsk->delayFifo) * currentSample) >> 2;
 
     afsk->iirY[0] = afsk->iirY[1];
+	#if (CONFIG_AFSK_FILTER == AFSK_BUTTERWORTH)
+	afsk->iirY[1] = afsk->iirX[0] + afsk->iirX[1] + (afsk->iirY[0] >> 1) + (afsk->iirY[0] >> 3) + (afsk->iirY[0] >> 5);
+	#elif (CONFIG_AFSK_FILTER == AFSK_CHEBYSHEV)
     afsk->iirY[1] = afsk->iirX[0] + afsk->iirX[1] + (afsk->iirY[0] >> 1); // Chebyshev filter
-
+	#endif
 
     // We put the sampled bit in a delay-line:
     // First we bitshift everything 1 left
@@ -380,51 +389,15 @@ void afsk_adc_isr(Afsk *afsk, int8_t currentSample) {
     // And then add the sampled bit to our delay line
     afsk->sampledBits |= (afsk->iirY[1] > 0) ? 1 : 0;
 
-	/*
-	if (ABS(afsk->iirY[1]) - 20 > 0) {
-		afsk->cd_state++;
-		if (afsk->cd_state > 30) {
-			afsk->cd_state = 30;
-			afsk->cd = true;
-		}
-	} else {
-		if (afsk->cd_state > 0) {
-			afsk->cd_state --;
-			if (afsk->cd_state == 0) {
-				afsk->cd = false;
-			}
-		}
-	}
-	*/
-
     // Put the current raw sample in the delay FIFO
     fifo_push(&afsk->delayFifo, currentSample);
 
-#elif (CONFIG_AFSK_FILTER == AFSK_FIR)
-#define DCD_LEVEL 5
+#else //(CONFIG_AFSK_FILTER == AFSK_FIR)
 	afsk->iirY[0] = ABS(fir_filter(currentSample, FIR_1200_BP));
 	afsk->iirY[1] = ABS(fir_filter(currentSample, FIR_2200_BP));
 
 	afsk->sampledBits <<= 1;
 	afsk->sampledBits |= fir_filter(afsk->iirY[1] - afsk->iirY[0], FIR_1200_LP) > 0;
-
-	/*
-	if (afsk->iirY[1] > DCD_LEVEL || afsk->iirY[0] > DCD_LEVEL) {
-		afsk->cd_state++;
-		if (afsk->cd_state > 30) {
-			afsk->cd_state = 30;
-			afsk->cd = true;
-		}
-	} else {
-		if (afsk->cd_state > 0) {
-			afsk->cd_state --;
-
-			if (afsk->cd_state == 0) {
-				afsk->cd = false;
-			}
-		}
-	}
-	*/
 #endif
 
     // We need to check whether there is a signal transition.

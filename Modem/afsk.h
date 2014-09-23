@@ -19,17 +19,6 @@
 // Our type definitions and function declarations   //
 //////////////////////////////////////////////////////
 
-/**
- * \name Afsk filter types.
- * $WIZ$ afsk_filter_list = "AFSK_BUTTERWORTH", "AFSK_CHEBYSHEV", "AFSK_FIR"
- * \{
- */
-#define AFSK_BUTTERWORTH  0
-#define AFSK_CHEBYSHEV    1
-#define AFSK_FIR          2
-/* \} */
-#define CONFIG_AFSK_FILTER AFSK_FIR
-
 #define SAMPLERATE 9600            				// The rate at which we are sampling and synthesizing
 #define BITRATE    1200            				// The actual bitrate at baseband. This is the baudrate.
 #define SAMPLESPERBIT (SAMPLERATE / BITRATE)	// How many DAC/ADC samples constitute one bit (8).
@@ -52,14 +41,6 @@ typedef struct Hdlc
 // This is our primary modem struct. It defines
 // all the values we need to modulate and
 // demodulate data from the physical medium.
-#define FIR_MAX_TAPS 16
-typedef struct FIR
-{
-	int8_t taps;
-	int8_t coef[FIR_MAX_TAPS];
-	int16_t mem[FIR_MAX_TAPS];
-} FIR;
-
 typedef struct Afsk
 {
     KFile fd;                               // A file descriptor for reading from and
@@ -104,11 +85,6 @@ typedef struct Afsk
     uint8_t actualBits;                     // Actual found bits at correct bitrate
 
     volatile int status;                    // Status of the modem, 0 means OK
-
-	/*
-	bool cd;								// carrier detected test flags
-	uint8_t cd_state;
-	*/
 } Afsk;
 
 // Explanation nessecary for this. BertOS uses an

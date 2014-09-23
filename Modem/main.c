@@ -91,7 +91,7 @@ static void init(void)
     ax25_init(&ax25, &afsk.fd, message_callback);
 
     // Init SimpleSerial
-    ss_init(&ax25);
+    ss_init(&ax25,&ser);
 
     // That's all!
 }

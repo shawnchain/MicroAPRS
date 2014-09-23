@@ -4,8 +4,8 @@
 #
 
 # Programmer interface configuration, see http://dev.bertos.org/wiki/ProgrammerInterface for help
-Modem_PROGRAMMER_TYPE = none
-Modem_PROGRAMMER_PORT = none
+Modem_PROGRAMMER_TYPE = usbasp
+Modem_PROGRAMMER_PORT = usb
 
 # Files included by the user.
 Modem_USER_CSRC = \
