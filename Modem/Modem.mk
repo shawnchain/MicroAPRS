@@ -4,7 +4,7 @@
 #
 
 # Constants automatically defined by the selected modules
-Modem_DEBUG = 0
+Modem_DEBUG = 1
 
 # Our target application
 TRG += Modem

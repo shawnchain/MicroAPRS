@@ -1,4 +1,4 @@
-#define ENABLE_HELP false
+#define ENABLE_HELP true
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -746,14 +746,13 @@ void ss_msgRetry(AX25Ctx *ax25) {
     ss_sendMsg(lastMessage, lastMessageLen, ax25);
 }
 
-#if 1
+#if 0
 #define out(fmt,arg...)  kfile_printf(&g_ser->fd, fmt, ##arg)
 #else
-#define out(str)
+#define out(fmt,arg...) kprintf(fmt,##arg)
 #endif
 
 void ss_printSettings(void) {
-/*
     out("Configuration:\n");
     out("Callsign: %.6s-%d\n", CALL, CALL_SSID);
     out("Destination: %.6s-%d\n", DST, DST_SSID);
@@ -771,7 +770,6 @@ void ss_printSettings(void) {
     if (symbolTable == '\\') {out("Symbol table: alternate\n");}
     if (symbolTable == '/') {out("Symbol table: standard\n");}
     out("Symbol: %c\n", symbol);
-*/
 }
 
 
